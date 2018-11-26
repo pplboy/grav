@@ -1,4 +1,5 @@
 <?php
+
 /**
  * @package    Grav.Common.User
  *
@@ -8,14 +9,33 @@
 
 namespace Grav\Common\User;
 
-use Grav\Common\Data\Blueprints;
-use Grav\Common\Data\Data;
-use Grav\Common\File\CompiledYamlFile;
 use Grav\Common\Grav;
 use Grav\Common\Utils;
-use RocketTheme\Toolbox\ResourceLocator\UniformResourceLocator;
+use Grav\Framework\File\Formatter\JsonFormatter;
+use Grav\Framework\File\Formatter\YamlFormatter;
+use Grav\Framework\Flex\FlexObject;
+use RocketTheme\Toolbox\File\FileInterface;
 
-class User extends Data
+/**
+ * Flex User
+ *
+ * Flex User is mostly compatible with the older User class, except on few key areas:
+ *
+ * - Constructor parameters have been changed. Old code creating a new user does not work.
+ * - Serializer has been changed -- existing sessions will be killed.
+ *
+ * @package Grav\Common\User
+ *
+ * @property string $username
+ * @property string $email
+ * @property string $fullname
+ * @property string $state
+ * @property array $groups
+ * @property array $access
+ * @property bool $authenticated
+ * @property bool $authorized
+ */
+class User extends FlexObject implements UserInterface
 {
     /**
      * Load user account.
@@ -23,30 +43,26 @@ class User extends Data
      * Always creates user object. To check if user exists, use $this->exists().
      *
      * @param string $username
-     * @param bool $setConfig
      *
-     * @return User
+     * @return User|FlexObject
      */
     public static function load($username)
     {
-        $grav = Grav::instance();
-        /** @var UniformResourceLocator $locator */
-        $locator = $grav['locator'];
+        $collection = static::getCollection();
 
-        // force lowercase of username
-        $username = strtolower($username);
+        if ($username !== '') {
+            $user = $collection[mb_strtolower($username)];
+            if ($user) {
+                return $user;
+            }
+        }
 
-        $blueprints = new Blueprints;
-        $blueprint = $blueprints->get('user/account');
+        $directory = $collection->getFlexDirectory();
 
-        $file_path = $locator->findResource('account://' . $username . YAML_EXT);
-        $file = CompiledYamlFile::instance($file_path);
-        $content = (array)$file->content() + ['username' => $username, 'state' => 'enabled'];
-
-        $user = new User($content, $blueprint);
-        $user->file($file);
-
-        return $user;
+        return $directory->createObject([
+            'username' => $username,
+            'state' => 'enabled'
+        ]);
     }
 
     /**
@@ -54,35 +70,24 @@ class User extends Data
      *
      * @param string $query the query to search for
      * @param array $fields the fields to search
-     * @return User
+     * @return User|FlexObject
      */
     public static function find($query, $fields = ['username', 'email'])
     {
-        $account_dir = Grav::instance()['locator']->findResource('account://');
-        $files = $account_dir ? array_diff(scandir($account_dir), ['.', '..']) : [];
+        $collection = static::getCollection();
 
-        // Try with username first, you never know!
-        if (in_array('username', $fields, true)) {
-            $user = User::load($query);
-            unset($fields[array_search('username', $fields, true)]);
-        } else {
-            $user = User::load('');
-        }
-
-        // If not found, try the fields
-        if (!$user->exists()) {
-            foreach ($files as $file) {
-                if (Utils::endsWith($file, YAML_EXT)) {
-                    $find_user = User::load(trim(pathinfo($file, PATHINFO_FILENAME)));
-                    foreach ($fields as $field) {
-                        if ($find_user[$field] === $query) {
-                            return $find_user;
-                        }
-                    }
-                }
+        foreach ($fields as $field) {
+            if ($field === 'username') {
+                $user = $collection[mb_strtolower($query)];
+            } else {
+                $user = $collection->find($query, $field);
+            }
+            if ($user) {
+                return $user;
             }
         }
-        return $user;
+
+        return static::load('');
     }
 
     /**
@@ -94,42 +99,324 @@ class User extends Data
      */
     public static function remove($username)
     {
-        $file_path = Grav::instance()['locator']->findResource('account://' . $username . YAML_EXT);
+        $user = static::load($username);
 
-        return $file_path && unlink($file_path);
+        $exists = $user->exists();
+        if ($exists) {
+            $user->delete();
+        }
+
+        return $exists;
+    }
+
+    /*
+    public function __construct(array $items = [], $blueprints = null)
+    {
+        $this->items = $items;
+        $this->blueprints = $blueprints;
+    }
+    /*
+
+    /**
+     * Get value by using dot notation for nested arrays/objects.
+     *
+     * @example $value = $this->get('this.is.my.nested.variable');
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param mixed   $default    Default value (or null).
+     * @param string  $separator  Separator, defaults to '.'
+     * @return mixed  Value.
+     */
+    public function get($name, $default = null, $separator = null)
+    {
+        return $this->getNestedProperty($name, $default, $separator);
     }
 
     /**
-     * @param string $offset
-     * @return bool
+     * Set value by using dot notation for nested arrays/objects.
+     *
+     * @example $data->set('this.is.my.nested.variable', $value);
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param mixed   $value      New value.
+     * @param string  $separator  Separator, defaults to '.'
+     * @return $this
      */
-    public function offsetExists($offset)
+    public function set($name, $value, $separator = null)
     {
-        $value = parent::offsetExists($offset);
+        $this->setNestedProperty($name, $value, $separator);
 
-        // Handle special case where user was logged in before 'authorized' was added to the user object.
-        if (false === $value && $offset === 'authorized') {
-            $value = $this->offsetExists('authenticated');
-        }
-
-        return $value;
+        return $this;
     }
 
     /**
-     * @param string $offset
-     * @return mixed
+     * Unset value by using dot notation for nested arrays/objects.
+     *
+     * @example $data->undef('this.is.my.nested.variable');
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param string  $separator  Separator, defaults to '.'
+     * @return $this
      */
-    public function offsetGet($offset)
+    public function undef($name, $separator = null)
     {
-        $value = parent::offsetGet($offset);
+        $this->unsetNestedProperty($name, $separator);
 
-        // Handle special case where user was logged in before 'authorized' was added to the user object.
-        if (null === $value && $offset === 'authorized') {
-            $value = $this->offsetGet('authenticated');
-            $this->offsetSet($offset, $value);
+        return $this;
+    }
+
+    /**
+     * Set default value by using dot notation for nested arrays/objects.
+     *
+     * @example $data->def('this.is.my.nested.variable', 'default');
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param mixed   $default    Default value (or null).
+     * @param string  $separator  Separator, defaults to '.'
+     * @return $this
+     */
+    public function def($name, $default = null, $separator = null)
+    {
+        $this->defNestedProperty($name, $default, $separator);
+
+        return $this;
+    }
+
+    /**
+     * Implements Countable interface.
+     *
+     * @return int
+     * @todo remove?
+     */
+    public function count()
+    {
+        return \count($this->jsonSerialize());
+    }
+
+    /**
+     * Convert object into an array.
+     *
+     * @return array
+     */
+    public function toArray()
+    {
+        return $this->jsonSerialize();
+    }
+
+    /**
+     * Convert object into YAML string.
+     *
+     * @param  int $inline  The level where you switch to inline YAML.
+     * @param  int $indent  The amount of spaces to use for indentation of nested nodes.
+     *
+     * @return string A YAML string representing the object.
+     */
+    public function toYaml($inline = 5, $indent = 2)
+    {
+        $yaml = new YamlFormatter(['inline' => $inline, 'indent' => $indent]);
+
+        return $yaml->encode($this->toArray());
+    }
+
+    /**
+     * Convert object into JSON string.
+     *
+     * @return string
+     */
+    public function toJson()
+    {
+        $json = new JsonFormatter();
+
+        return $json->encode($this->toArray());
+    }
+
+    /**
+     * Join nested values together by using blueprints.
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param mixed   $value      Value to be joined.
+     * @param string  $separator  Separator, defaults to '.'
+     * @return $this
+     * @throws \RuntimeException
+     */
+    public function join($name, $value, $separator = null)
+    {
+        $old = $this->get($name, null, $separator);
+        if ($old !== null) {
+            if (!\is_array($old)) {
+                throw new \RuntimeException('Value ' . $old);
+            }
+
+            if (\is_object($value)) {
+                $value = (array) $value;
+            } elseif (!\is_array($value)) {
+                throw new \RuntimeException('Value ' . $value);
+            }
+
+            $value = $this->getBlueprint()->mergeData($old, $value, $name, $separator);
         }
 
-        return $value;
+        $this->set($name, $value, $separator);
+
+        return $this;
+    }
+
+    /**
+     * Get nested structure containing default values defined in the blueprints.
+     *
+     * Fields without default value are ignored in the list.
+
+     * @return array
+     */
+    public function getDefaults()
+    {
+        return $this->getBlueprint()->getDefaults();
+    }
+
+    /**
+     * Set default values by using blueprints.
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param mixed   $value      Value to be joined.
+     * @param string  $separator  Separator, defaults to '.'
+     * @return $this
+     */
+    public function joinDefaults($name, $value, $separator = null)
+    {
+        if (\is_object($value)) {
+            $value = (array) $value;
+        }
+
+        $old = $this->get($name, null, $separator);
+        if ($old !== null) {
+            $value = $this->getBlueprint()->mergeData($value, $old, $name, $separator);
+        }
+
+        $this->setNestedProperty($name, $value, $separator);
+
+        return $this;
+    }
+
+    /**
+     * Get value from the configuration and join it with given data.
+     *
+     * @param string  $name       Dot separated path to the requested value.
+     * @param array|object $value      Value to be joined.
+     * @param string  $separator  Separator, defaults to '.'
+     * @return array
+     * @throws \RuntimeException
+     */
+    public function getJoined($name, $value, $separator = null)
+    {
+        if (\is_object($value)) {
+            $value = (array) $value;
+        } elseif (!\is_array($value)) {
+            throw new \RuntimeException('Value ' . $value);
+        }
+
+        $old = $this->get($name, null, $separator);
+
+        if ($old === null) {
+            // No value set; no need to join data.
+            return $value;
+        }
+
+        if (!\is_array($old)) {
+            throw new \RuntimeException('Value ' . $old);
+        }
+
+        // Return joined data.
+        return $this->getBlueprint()->mergeData($old, $value, $name, $separator);
+    }
+
+
+    /**
+     * Merge two configurations together.
+     *
+     * @param array $data
+     * @return $this
+     */
+    public function merge(array $data)
+    {
+        $this->setElements($this->getBlueprint()->mergeData($this->toArray(), $data));
+
+        return $this;
+    }
+
+    /**
+     * Set default values to the configuration if variables were not set.
+     *
+     * @param array $data
+     * @return $this
+     */
+    public function setDefaults(array $data)
+    {
+        $this->setElements($this->getBlueprint()->mergeData($data, $this->toArray()));
+
+        return $this;
+    }
+
+    /**
+     * Validate by blueprints.
+     *
+     * @return $this
+     * @throws \Exception
+     */
+    public function validate()
+    {
+        $this->getBlueprint()->validate($this->toArray());
+
+        return $this;
+    }
+
+    /**
+     * @return $this
+     * Filter all items by using blueprints.
+     */
+    public function filter()
+    {
+        $this->setElements($this->getBlueprint()->filter($this->toArray()));
+
+        return $this;
+    }
+
+    /**
+     * Get extra items which haven't been defined in blueprints.
+     *
+     * @return array
+     */
+    public function extra()
+    {
+        return $this->getBlueprint()->extra($this->toArray());
+    }
+
+    /**
+     * Return unmodified data as raw string.
+     *
+     * NOTE: This function only returns data which has been saved to the storage.
+     *
+     * @return string
+     */
+    public function raw()
+    {
+        $file = $this->file();
+
+        return $file ? $file->raw() : '';
+    }
+
+    /**
+     * Set or get the data storage.
+     *
+     * @param FileInterface $storage Optionally enter a new storage.
+     * @return FileInterface
+     */
+    public function file(FileInterface $storage = null)
+    {
+        if ($storage) {
+            $this->storage = $storage;
+        }
+
+        return $this->storage;
     }
 
     /**
@@ -143,39 +430,24 @@ class User extends Data
      */
     public function authenticate($password)
     {
-        $save = false;
+        // Always execute verify to protect us from timing attacks
+        $hash = $this->getProperty('hashed_password') ?? Grav::instance()['config']->get('system.security.default_hash');
+        $result = Authentication::verify($password, $hash);
 
-        // Plain-text is still stored
-        if ($this->password) {
-            if ($password !== $this->password) {
-                // Plain-text passwords do not match, we know we should fail but execute
-                // verify to protect us from timing attacks and return false regardless of
-                // the result
-                Authentication::verify(
-                    $password,
-                    Grav::instance()['config']->get('system.security.default_hash')
-                );
-
+        $plaintext_password = $this->getProperty('password');
+        if (null !== $plaintext_password) {
+            // Plain-text password is still stored, check if it matches
+            if ($password !== $plaintext_password) {
                 return false;
             }
 
-            // Plain-text does match, we can update the hash and proceed
-            $save = true;
-
-            $this->hashed_password = Authentication::create($this->password);
-            unset($this->password);
-
+            // Force hash update to get rid of plaintext password
+            $result = 2;
         }
 
-        $result = Authentication::verify($password, $this->hashed_password);
-
-        // Password needs to be updated, save the file.
         if ($result === 2) {
-            $save = true;
-            $this->hashed_password = Authentication::create($password);
-        }
-
-        if ($save) {
+            // Password needs to be updated, save the user
+            $this->setProperty('password', $password);
             $this->save();
         }
 
@@ -187,72 +459,58 @@ class User extends Data
      */
     public function save()
     {
-        $file = $this->file();
-
-        if ($file) {
-            $username = $this->get('username');
-
-            if (!$file->filename()) {
-                $locator = Grav::instance()['locator'];
-                $file->filename($locator->findResource('account://') . DS . strtolower($username) . YAML_EXT);
-            }
-
-            // if plain text password, hash it and remove plain text
-            if ($this->password) {
-                $this->hashed_password = Authentication::create($this->password);
-                unset($this->password);
-            }
-
-            unset($this->username);
-            $file->save($this->items);
-            $this->set('username', $username);
+        $password = $this->getProperty('password');
+        if (null !== $password) {
+            $this->unsetProperty('password');
+            $this->unsetProperty('password1');
+            $this->unsetProperty('password2');
+            $this->setProperty('hashed_password', Authentication::create($password));
         }
+
+        return parent::save();
     }
 
     /**
      * Checks user authorization to the action.
      *
      * @param  string $action
-     *
+     * @param  string $scope
      * @return bool
      */
-    public function authorize($action)
+    public function authorize(string $action, ?string $scope = null) : bool
     {
-        if (empty($this->items)) {
+        if (!$this->getProperty('authenticated')) {
             return false;
         }
 
-        if (!$this->authenticated) {
+        if ($this->getProperty('state') !== 'enabled') {
             return false;
         }
 
-        if (isset($this->state) && $this->state !== 'enabled') {
-            return false;
+        if (null !== $scope) {
+            $action = $scope . '.' . $action;
         }
 
-        $return = false;
+        $authorized = false;
 
         //Check group access level
-        $groups = $this->get('groups');
-        if ($groups) {
-            foreach ((array)$groups as $group) {
-                $permission = Grav::instance()['config']->get("groups.{$group}.access.{$action}");
-                $return = Utils::isPositive($permission);
-                if ($return === true) {
-                    break;
-                }
+        $groups = (array)$this->getProperty('groups');
+        foreach ($groups as $group) {
+            $permission = Grav::instance()['config']->get("groups.{$group}.access.{$action}");
+            $authorized = Utils::isPositive($permission);
+            if ($authorized === true) {
+                break;
             }
         }
 
         //Check user access level
-        if ($this->get('access')) {
-            if (Utils::getDotNotation($this->get('access'), $action) !== null) {
-                $permission = $this->get("access.{$action}");
-                $return = Utils::isPositive($permission);
-            }
+        $check = "access.{$action}";
+        $permission = $this->getProperty($check) ?? $this->getNestedProperty($check);
+        if (null !== $permission) {
+            $authorized = Utils::isPositive($permission);
         }
 
-        return $return;
+        return $authorized;
     }
 
     /**
@@ -278,19 +536,87 @@ class User extends Data
      */
     public function avatarUrl()
     {
-        if ($this->avatar) {
-            $avatar = $this->avatar;
+        $avatar = $this->getProperty('avatar');
+        if (\is_array($avatar)) {
             $avatar = array_shift($avatar);
             return Grav::instance()['base_url'] . '/' . $avatar['path'];
-        } elseif ($this->provider) {
-            $provider = $this->provider;
-            if (isset($this->$provider['avatar_url'])) {
-                return $this->$provider['avatar_url'];
-            } elseif (isset($this->$provider['avatar'])) {
-                return $this->$provider['avatar'];
+        }
+
+        $provider = $this->getProperty('provider');
+        if (\is_array($provider)) {
+            if (isset($provider['avatar_url'])) {
+                return $provider['avatar_url'];
+            }
+            if (isset($provider['avatar'])) {
+                return $provider['avatar'];
             }
         }
 
-        return 'https://www.gravatar.com/avatar/' . md5($this->email);
+        return 'https://www.gravatar.com/avatar/' . md5($this->getProperty('email'));
+    }
+
+    /**
+     * Unserialize user.
+     *
+     * Implements backwards compatibility with the old User class.
+     */
+    public function __wakeup()
+    {
+        $key = mb_strtolower($this->username);
+
+        $serialized = [
+            'type' => 'users',
+            'key' => $key,
+            'elements' => $this->items,
+            'storage' => [
+                'key' => $key,
+                'storage_key' => $key,
+                'timestamp' => 0
+            ]
+        ];
+
+        $this->doUnserialize($serialized);
+    }
+
+    /**
+     * @return UserCollection
+     */
+    protected static function getCollection()
+    {
+        return Grav::instance()['users'];
+    }
+
+    /**
+     * @return array
+     */
+    protected function doSerialize()
+    {
+        return [
+            'type' => 'users',
+            'key' => $this->getKey(),
+            'elements' => $this->jsonSerialize(),
+            'storage' => $this->getStorage()
+        ];
+    }
+
+    /**
+     * @param array $serialized
+     */
+    protected function doUnserialize(array $serialized)
+    {
+        $grav = Grav::instance();
+
+        /** @var UserCollection $users */
+        $users = $grav['users'];
+
+        $directory = $users->getFlexDirectory();
+        if (!$directory) {
+            throw new \InvalidArgumentException('Internal error');
+        }
+
+        $this->setFlexDirectory($directory);
+        $this->setStorage($serialized['storage']);
+        $this->setKey($serialized['key']);
+        $this->setElements($serialized['elements']);
     }
 }
