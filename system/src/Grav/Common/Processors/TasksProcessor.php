@@ -24,12 +24,14 @@ class TasksProcessor extends ProcessorBase
         $this->startTimer();
 
         $task = $this->container['task'];
-        if ($task) {
-            $params = $request->getAttribute('controller');
-            $controllerClass = $params['class'] ?? null;
+        $action = $this->container['action'];
+        if ($task || $action) {
+            $attributes = $request->getAttribute('controller');
+
+            $controllerClass = $attributes['class'] ?? null;
             if ($controllerClass) {
                 /** @var RequestHandlerInterface $controller */
-                $controller = new $controllerClass($params);
+                $controller = new $controllerClass($attributes['path'] ?? '', $attributes['params'] ?? []);
                 try {
                     return $controller->handle($request);
                 } catch (NotFoundException $e) {
@@ -37,7 +39,11 @@ class TasksProcessor extends ProcessorBase
                 }
             }
 
-            $this->container->fireEvent('onTask.' . $task);
+            if ($task) {
+                $this->container->fireEvent('onTask.' . $task);
+            } elseif ($action) {
+                $this->container->fireEvent('onAction.' . $action);
+            }
         }
         $this->stopTimer();
 

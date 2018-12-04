@@ -10,10 +10,13 @@ namespace Grav\Framework\Flex\Traits;
  */
 
 use Grav\Common\Config\Config;
+use Grav\Common\Filesystem\Folder;
 use Grav\Common\Grav;
 use Grav\Common\Media\Traits\MediaTrait;
 use Grav\Common\Utils;
+use Grav\Framework\Form\FormFlashFile;
 use Psr\Http\Message\UploadedFileInterface;
+use RocketTheme\Toolbox\File\YamlFile;
 use RocketTheme\Toolbox\ResourceLocator\UniformResourceLocator;
 use RuntimeException;
 
@@ -24,7 +27,7 @@ trait FlexMediaTrait
 {
     use MediaTrait;
 
-    public function uploadMediaFile(UploadedFileInterface $uploadedFile, string $filename = null) : void
+    public function checkUploadedMediaFile(UploadedFileInterface $uploadedFile)
     {
         $grav = Grav::instance();
         $language = $grav['language'];
@@ -43,9 +46,7 @@ trait FlexMediaTrait
                 throw new RuntimeException($language->translate('PLUGIN_ADMIN.UNKNOWN_ERRORS'), 400);
         }
 
-        if (!$filename) {
-            $filename = (string)$uploadedFile->getClientFilename();
-        }
+        $filename = $uploadedFile->getClientFilename();
 
         if (!Utils::checkFilename($filename)) {
             throw new RuntimeException(sprintf($language->translate('PLUGIN_ADMIN.FILEUPLOAD_UNABLE_TO_UPLOAD'), $filename, 'Bad filename'), 400);
@@ -59,15 +60,38 @@ trait FlexMediaTrait
             throw new RuntimeException($language->translate('PLUGIN_ADMIN.EXCEEDED_GRAV_FILESIZE_LIMIT'), 400);
         }
 
+        $this->checkMediaFilename($filename);
+    }
+
+    public function checkMediaFilename(string $filename)
+    {
         // Check the file extension.
         $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
 
+        $grav = Grav::instance();
+
+        /** @var Config $config */
+        $config = $grav['config'];
+
         // If not a supported type, return
         if (!$extension || !$config->get("media.types.{$extension}")) {
+            $language = $grav['language'];
             throw new RuntimeException($language->translate('PLUGIN_ADMIN.UNSUPPORTED_FILE_TYPE') . ': ' . $extension, 400);
+        }
+    }
+
+    public function uploadMediaFile(UploadedFileInterface $uploadedFile, string $filename = null, string $field = null) : void
+    {
+        $this->checkUploadedMediaFile($uploadedFile);
+
+        if ($filename) {
+            $this->checkMediaFilename($filename);
+        } else {
+            $filename = $uploadedFile->getClientFilename();
         }
 
         $media = $this->getMedia();
+        $grav = Grav::instance();
 
         /** @var UniformResourceLocator $locator */
         $locator = $grav['locator'];
@@ -79,15 +103,25 @@ trait FlexMediaTrait
 
         try {
             // Upload it
-            $uploadedFile->moveTo(sprintf('%s/%s', $path, $filename));
+            $filepath = sprintf('%s/%s', $path, $filename);
+            Folder::mkdir(\dirname($filepath));
+            if ($uploadedFile instanceof FormFlashFile) {
+                $metadata = $uploadedFile->getMetaData();
+                if ($metadata) {
+                    $file = YamlFile::instance($filepath . '.meta.yaml');
+                    $file->save(['upload' => $metadata]);
+                }
+            }
+            $uploadedFile->moveTo($filepath);
         } catch (\Exception $e) {
+            $language = $grav['language'];
             throw new RuntimeException($language->translate('PLUGIN_ADMIN.FAILED_TO_MOVE_UPLOADED_FILE'), 400);
         }
 
         $this->clearMediaCache();
     }
 
-    public function deleteMediaFile(string $filename) : void
+    public function deleteMediaFile(string $filename, string $field = null) : void
     {
         $grav = Grav::instance();
         $language = $grav['language'];

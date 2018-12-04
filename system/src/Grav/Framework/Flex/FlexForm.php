@@ -14,6 +14,10 @@ use Grav\Common\Data\Data;
 use Grav\Common\Data\ValidationException;
 use Grav\Common\Grav;
 use Grav\Common\Utils;
+use Grav\Framework\Flex\Interfaces\FlexFormInterface;
+use Grav\Framework\Flex\Interfaces\FlexObjectInterface;
+use Grav\Framework\Form\FormFlash;
+use Grav\Framework\Route\Route;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
 
@@ -21,51 +25,70 @@ use Psr\Http\Message\UploadedFileInterface;
  * Class FlexForm
  * @package Grav\Framework\Flex
  */
-class FlexForm implements \Serializable
+class FlexForm implements FlexFormInterface
 {
     /** @var string */
     private $name;
+    /** @var string */
+    private $id;
     /** @var string */
     private $uniqueid;
     /** @var bool */
     private $submitted;
     /** @var string[] */
     private $errors;
-    /** @var Data */
+    /** @var Data|FlexObjectInterface */
     private $data;
-    /** @var UploadedFileInterface[] */
+    /** @var array|UploadedFileInterface[] */
     private $files;
-    /** @var FlexObject */
+    /** @var FlexObjectInterface */
     private $object;
+    /** @var FormFlash */
+    private $flash;
 
     /**
      * FlexForm constructor.
      * @param string $name
-     * @param FlexObject|null $object
+     * @param FlexObjectInterface $object
      */
-    public function __construct(string $name = '', FlexObject $object = null)
+    public function __construct(string $name, FlexObjectInterface $object)
     {
         $this->name = $name;
-
+        $this->setObject($object);
+        $this->setId($this->getName());
         $this->reset();
-
-        if ($object) {
-            $this->setObject($object);
-        }
     }
 
     /**
+     * Get HTML id="..." attribute.
+     *
+     * Defaults to 'flex-[type]-[name]', where 'type' is object type and 'name' is the first parameter given in constructor.
+     *
      * @return string
      */
-    public function getName() : string
+    public function getId(): string
     {
-        $object = $this->object;
-        $name = $this->name ?: 'object';
-
-        return "flex-{$object->getType(false)}-{$name}";
+        return $this->id;
     }
 
-    public function getUniqueId() : string
+    /**
+     * Sets HTML id="" attribute.
+     *
+     * @param string $id
+     */
+    public function setId(string $id): void
+    {
+        $this->id = $id;
+    }
+
+    /**
+     * Get unique id for the current form instance. By default regenerated on every page reload.
+     *
+     * This id is used to load the saved form state, if available.
+     *
+     * @return string
+     */
+    public function getUniqueId(): string
     {
         if (null === $this->uniqueid) {
             $this->uniqueid = Utils::generateRandomString(20);
@@ -75,37 +98,73 @@ class FlexForm implements \Serializable
     }
 
     /**
+     * Sets unique form id allowing you to attach the form state to the object for example.
+     *
+     * @param string $uniqueId
+     */
+    public function setUniqueId(string $uniqueId): void
+    {
+        $this->uniqueid = $uniqueId;
+    }
+
+    /**
      * @return string
      */
-    public function getAction() : string
+    public function getName(): string
+    {
+        $object = $this->getObject();
+        $name = $this->name ?: 'object';
+
+        return "flex-{$object->getType(false)}-{$name}";
+    }
+
+    /**
+     * @return string
+     */
+    public function getFormName(): string
+    {
+        return $this->name;
+    }
+
+    /**
+     * @return string
+     */
+    public function getNonceName(): string
+    {
+        return 'form-nonce';
+    }
+
+    /**
+     * @return string
+     */
+    public function getNonceAction(): string
+    {
+        return 'form';
+    }
+
+    /**
+     * @return string
+     */
+    public function getAction(): string
     {
         // TODO:
         return '';
     }
 
     /**
-     * @return array
+     * @return Data|FlexObjectInterface
      */
-    public function getButtons() : array
+    public function getData()
     {
-        return [
-            [
-                'type' => 'submit',
-                'value' => 'Save'
-            ]
-        ];
+        return $this->data ?? $this->getObject();
     }
 
     /**
-     * @return Data
+     * @return array|UploadedFileInterface[]
      */
-    public function getData() : Data
+    public function getFiles(): array
     {
-        if (null === $this->data) {
-            $this->data = new Data($this->getObject()->jsonSerialize());
-        }
-
-        return $this->data;
+        return $this->files;
     }
 
     /**
@@ -118,39 +177,18 @@ class FlexForm implements \Serializable
      */
     public function getValue(string $name)
     {
-        return $this->getData()->get($name);
-    }
-
-    /**
-     * @return UploadedFileInterface[]
-     */
-    public function getFiles() : array
-    {
-        return $this->files;
-    }
-
-    /**
-     * Note: this method clones the object.
-     *
-     * @param FlexObject $object
-     * @return $this
-     */
-    public function setObject(FlexObject $object) : self
-    {
-        $this->object = clone $object;
-
-        return $this;
-    }
-
-    /**
-     * @return FlexObject
-     */
-    public function getObject() : FlexObject
-    {
-        if (!$this->object) {
-            throw new \RuntimeException('FlexForm: Object is not defined');
+        if (null === $this->data) {
+            return $this->getObject()->getNestedProperty($name);
         }
 
+        return $this->data->get($name);
+    }
+
+    /**
+     * @return FlexObjectInterface
+     */
+    public function getObject(): FlexObjectInterface
+    {
         return $this->object;
     }
 
@@ -158,7 +196,7 @@ class FlexForm implements \Serializable
      * @param ServerRequestInterface $request
      * @return $this
      */
-    public function handleRequest(ServerRequestInterface $request) : self
+    public function handleRequest(ServerRequestInterface $request): FlexFormInterface
     {
         try {
             $method = $request->getMethod();
@@ -180,7 +218,7 @@ class FlexForm implements \Serializable
     /**
      * @return bool
      */
-    public function isValid() : bool
+    public function isValid(): bool
     {
         return !$this->errors;
     }
@@ -188,7 +226,7 @@ class FlexForm implements \Serializable
     /**
      * @return array
      */
-    public function getErrors() : array
+    public function getErrors(): array
     {
         return $this->errors;
     }
@@ -196,7 +234,7 @@ class FlexForm implements \Serializable
     /**
      * @return bool
      */
-    public function isSubmitted() : bool
+    public function isSubmitted(): bool
     {
         return $this->submitted;
     }
@@ -206,32 +244,29 @@ class FlexForm implements \Serializable
      * @param UploadedFileInterface[] $files
      * @return $this
      */
-    public function submit(array $data, array $files = null) : self
+    public function submit(array $data, array $files = null): FlexFormInterface
     {
         try {
             if ($this->isSubmitted()) {
                 throw new \RuntimeException('Form has already been submitted');
             }
 
-            $this->data = new Data($data);
             $this->files = $files ?? [];
-            $this->submitted = true;
-
-            $this->checkUploads($files);
-
-            $object = clone $this->object;
-            $object->update($this->data->toArray());
-            /*
-            if (method_exists($object, 'upload')) {
-                $object->upload($this->files);
+            $this->data = new Data($this->decodeData($data['data'] ?? []), $this->getBlueprint());
+            if ($this->getErrors()) {
+                return $this;
             }
-            $object->save();
-            */
 
-            $this->object = $object;
-            $this->valid = true;
+            $this->doSubmit($this->data->toArray(), $this->files);
+
+            $this->submitted = true;
         } catch (ValidationException $e) {
-            $this->errors = $e->getMessages();
+            $list = [];
+            foreach ($e->getMessages() as $field => $errors) {
+                $list[] = $errors;
+            }
+            $list = array_merge(...$list);
+            $this->errors = $list;
         }  catch (\Exception $e) {
             $this->errors[] = $e->getMessage();
         }
@@ -242,7 +277,7 @@ class FlexForm implements \Serializable
     /**
      * @return $this
      */
-    public function reset() : self
+    public function reset(): FlexFormInterface
     {
         $this->data = null;
         $this->files = [];
@@ -257,7 +292,7 @@ class FlexForm implements \Serializable
      *
      * @return array
      */
-    public function getFields() : array
+    public function getFields(): array
     {
         return $this->getBlueprint()->fields();
     }
@@ -265,7 +300,7 @@ class FlexForm implements \Serializable
     /**
      * @return Blueprint
      */
-    public function getBlueprint() : Blueprint
+    public function getBlueprint(): Blueprint
     {
         return $this->getObject()->getBlueprint($this->name);
     }
@@ -275,7 +310,7 @@ class FlexForm implements \Serializable
      *
      * @return string
      */
-    public function serialize() : string
+    public function serialize(): string
     {
         $data = [
             'name' => $this->name,
@@ -294,7 +329,7 @@ class FlexForm implements \Serializable
      *
      * @param string $data
      */
-    public function unserialize($data) : void
+    public function unserialize($data): void
     {
         $data = unserialize($data, ['allowed_classes' => [FlexObject::class]]);
 
@@ -306,26 +341,125 @@ class FlexForm implements \Serializable
         $this->object = $data['object'];
     }
 
+    /**
+     * @return Route|null
+     */
+    public function getFileUploadAjaxRoute(): ?Route
+    {
+        $object = $this->getObject();
+        if (!method_exists($object, 'route')) {
+            return null;
+        }
 
-    public function getMediaTaskRoute() : string
+        return $object->route('/edit.json/task:media.upload');
+    }
+
+    /**
+     * @param $field
+     * @param $filename
+     * @return Route|null
+     */
+    public function getFileDeleteAjaxRoute($field, $filename): ?Route
+    {
+        $object = $this->getObject();
+        if (!method_exists($object, 'route')) {
+            return null;
+        }
+
+        return $object->route('/edit.json/task:media.delete');
+    }
+
+    public function getMediaTaskRoute(): string
     {
         $grav = Grav::instance();
         /** @var Flex $flex */
         $flex = $grav['flex_objects'];
 
         if (method_exists($flex, 'adminRoute')) {
-            return $flex->adminRoute($this->object) . '.json';
+            return $flex->adminRoute($this->getObject()) . '.json';
         }
 
         return '';
     }
 
-    public function getMediaRoute() : string
+    public function getMediaRoute(): string
     {
-        return '/' . $this->object->getKey();
+        return '/' . $this->getObject()->getKey();
     }
 
-    protected function checkUploads(array $files) : void
+    /**
+     * Note: this method clones the object.
+     *
+     * @param FlexObjectInterface $object
+     * @return $this
+     */
+    protected function setObject(FlexObjectInterface $object): FlexFormInterface
+    {
+        $this->object = clone $object;
+
+        return $this;
+    }
+
+    /**
+     * Get flash object
+     *
+     * @return FormFlash
+     */
+    protected function getFlash()
+    {
+        if (null === $this->flash) {
+            $this->flash = new FormFlash($this->getName(), $this->getUniqueId());
+        }
+
+        return $this->flash;
+    }
+
+    /**
+     * @throws \Exception
+     */
+    protected function validate(): void
+    {
+        $this->data->validate();
+        $this->data->filter();
+        $this->checkUploads($this->files);
+    }
+
+    protected function setErrors(array $errors): void
+    {
+        $this->errors = array_merge($this->errors, $errors);
+    }
+
+    protected function setError(string $error): void
+    {
+        $this->errors[] = $error;
+    }
+
+    /**
+     * @param array $data
+     * @param array $files
+     * @throws \Exception
+     */
+    protected function doSubmit(array $data, array $files)
+    {
+        $this->validate();
+
+        $object = clone $this->getObject();
+        $object->update($data);
+
+        if (method_exists($object, 'triggerEvent')) {
+            $object->triggerEvent('onSave');
+        }
+
+        if (method_exists($object, 'upload')) {
+            $object->upload($files);
+        }
+
+        $object->save();
+
+        $this->setObject($object);
+    }
+
+    protected function checkUploads(array $files): void
     {
         foreach ($files as $file) {
             if ($file instanceof UploadedFileInterface) {
@@ -336,7 +470,7 @@ class FlexForm implements \Serializable
         }
     }
 
-    protected function checkUpload(UploadedFileInterface $file) : void
+    protected function checkUpload(UploadedFileInterface $file): void
     {
         // Handle bad filenames.
         $filename = $file->getClientFilename();
@@ -348,5 +482,51 @@ class FlexForm implements \Serializable
                 sprintf($grav['language']->translate('PLUGIN_FORM.FILEUPLOAD_UNABLE_TO_UPLOAD', null, true), $filename, 'Bad filename')
             );
         }
+    }
+
+    /**
+     * Decode data
+     *
+     * @param array $data
+     * @return array
+     */
+    protected function decodeData($data): array
+    {
+        if (!\is_array($data)) {
+            return [];
+        }
+
+        // Decode JSON encoded fields and merge them to data.
+        if (isset($data['_json'])) {
+            $data = array_replace_recursive($data, $this->jsonDecode($data['_json']));
+            unset($data['_json']);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Recursively JSON decode data.
+     *
+     * @param  array $data
+     *
+     * @return array
+     */
+    protected function jsonDecode(array $data): array
+    {
+        foreach ($data as $key => &$value) {
+            if (\is_array($value)) {
+                $value = $this->jsonDecode($value);
+            } else {
+                $value = json_decode($value, true);
+                if ($value === null && json_last_error() !== JSON_ERROR_NONE) {
+                    unset($data[$key]);
+                    // FIXME: add back
+                    //$this->errors[] = "Badly encoded JSON data (for {$key}) was sent to the form";
+                }
+            }
+        }
+
+        return $data;
     }
 }

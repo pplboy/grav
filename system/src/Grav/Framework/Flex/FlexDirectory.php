@@ -26,6 +26,7 @@ use Grav\Framework\Flex\Interfaces\FlexStorageInterface;
 use Grav\Framework\Flex\Storage\SimpleStorage;
 use Grav\Framework\Flex\Traits\FlexAuthorizeTrait;
 use Psr\SimpleCache\InvalidArgumentException;
+use RocketTheme\Toolbox\ResourceLocator\UniformResourceLocator;
 use RuntimeException;
 
 /**
@@ -211,13 +212,17 @@ class FlexDirectory implements FlexAuthorizeInterface
     }
 
     /**
+     * Returns an object if it exists.
+     *
+     * Note: It is not safe to use the object without checking if the user can access it.
+     *
      * @param string $key
      * @param string|null $keyField  Field to be used as the key.
      * @return FlexObject|null
      */
     public function getObject($key, string $keyField = null) : ?FlexObject
     {
-        return $this->getCollection(null, $keyField)->get($key);
+        return $this->getIndex(null, $keyField)->get($key);
     }
 
     /**
@@ -344,6 +349,10 @@ class FlexDirectory implements FlexAuthorizeInterface
         /** @var Debugger $debugger */
         $debugger = $grav['debugger'];
         $debugger->addMessage(sprintf('Flex: Clearing all %s cache', $this->type), 'debug');
+
+        /** @var UniformResourceLocator $locator */
+        $locator = $grav['locator'];
+        $locator->clearCache();
 
         $this->getCache('index')->clear();
         $this->getCache('object')->clear();

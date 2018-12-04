@@ -260,24 +260,26 @@ class FlexIndex extends ObjectIndex implements FlexCollectionInterface, FlexInde
         $cachedMethods = $className::getCachedMethods();
 
         if (!empty($cachedMethods[$name])) {
-            // TODO: We can optimize this by removing key field from the key and creating collection with proper key.
-            $key = $this->getType(true) . '.' . sha1($name . '.' . json_encode($arguments) . $this->getCacheKey(). $this->getKeyField());
+            $key = $this->getType(true) . '.' . sha1($name . '.' . json_encode($arguments) . $this->getCacheKey());
 
             $cache = $this->_flexDirectory->getCache('object');
 
-            $test = new \stdClass;
             try {
-                $result = $cache->get($key, $test);
+                $result = $cache->get($key);
+
+                // Make sure the keys aren't changed if the returned type is the same index type.
+                if ($result instanceof self && $this->getType() === $result->getType()) {
+                    $result = $result->withKeyField($this->getKeyField());
+                }
             } catch (InvalidArgumentException $e) {
                 /** @var Debugger $debugger */
                 $debugger = Grav::instance()['debugger'];
                 $debugger->addException($e);
-
-                $result = $test;
             }
 
-            if ($result === $test) {
-                $result = $this->loadCollection()->{$name}(...$arguments);
+            if (null === $result) {
+                $collection = $this->loadCollection();
+                $result = $collection->{$name}(...$arguments);
 
                 try {
                     // If flex collection is returned, convert it back to flex index.
@@ -285,6 +287,10 @@ class FlexIndex extends ObjectIndex implements FlexCollectionInterface, FlexInde
                         $cached = $result->getFlexDirectory()->getIndex($result->getKeys());
                     } else {
                         $cached = $result;
+                    }
+
+                    if ($cached === null) {
+                        throw new \RuntimeException('Flex: Internal error');
                     }
 
                     $cache->set($key, $cached);
@@ -297,8 +303,8 @@ class FlexIndex extends ObjectIndex implements FlexCollectionInterface, FlexInde
         } else {
             $collection = $this->loadCollection();
             $result = $collection->{$name}(...$arguments);
-            $class = \get_class($collection);
             if (!isset($cachedMethods[$name])) {
+                $class = \get_class($collection);
                 $debugger->addMessage("Call '{$class}:{$name}()' isn't cached", 'debug');
             }
         }
@@ -407,7 +413,7 @@ class FlexIndex extends ObjectIndex implements FlexCollectionInterface, FlexInde
      */
     protected function loadElements(array $entries = null) : array
     {
-        return $this->_flexDirectory->loadObjects($entries ?? $this->getEntries());
+        return $this->_flexDirectory->loadObjects($entries ?? $this->withKeyField()->getEntries());
     }
 
     /**
@@ -416,7 +422,7 @@ class FlexIndex extends ObjectIndex implements FlexCollectionInterface, FlexInde
      */
     protected function loadCollection(array $entries = null) : CollectionInterface
     {
-        return $this->_flexDirectory->loadCollection($entries ?? $this->getEntries());
+        return $this->_flexDirectory->loadCollection($entries ?? $this->withKeyField()->getEntries());
     }
 
     /**
